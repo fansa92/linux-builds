@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: 'Kernel version (e.g. 6.12.16)'
+        description: 'Kernel version (e.g. 7.1.2)'
         required: true
-        default: '6.12.16'
+        default: '7.1.2'
+      busybox_version:
+        description: ' busybox version (e.g. 1.38.0)'
+        required: true
+        default: '1.38.0'
       config_type:
         description: 'Kernel config type'
         required: true
@@ -18,9 +22,9 @@ on:
           - localmodconfig
 
 env:
-  KERNEL_VERSION: ${{ github.event.inputs.kernel_version || '6.12.16' }}
+  KERNEL_VERSION: ${{ github.event.inputs.kernel_version || '7.1.2' }}
   CONFIG_TYPE: ${{ github.event.inputs.config_type || 'defconfig' }}
-
+  BUSYBOX_VERSION: ${{ github.event.inputs.busybox_version || '1.38.0' }}
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -118,34 +122,48 @@ jobs:
       # ============================================================
       - name: Build BusyBox
         run: |
-          wget -q "https://busybox.net/downloads/busybox-1.37.0.tar.bz2"
-          tar -xf busybox-1.37.0.tar.bz2
-          cd busybox-1.37.0
-
+          wget -q "https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2"
+          tar -xf busybox-*.tar.bz2
+          cd busybox-*
           make defconfig
+      
+          # 静态编译
           sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-
-          # 启用网络工具
-          ./scripts/config --enable CONFIG_IFCONFIG
-          ./scripts/config --enable CONFIG_IP
-          ./scripts/config --enable CONFIG_ROUTE
-          ./scripts/config --enable CONFIG_UDHCPC
-          ./scripts/config --enable CONFIG_UDHCPC_DEFAULT_SCRIPT
-          ./scripts/config --enable CONFIG_IFUP
-          ./scripts/config --enable CONFIG_IFDOWN
-          ./scripts/config --enable CONFIG_PING
-          ./scripts/config --enable CONFIG_WGET
-          ./scripts/config --enable CONFIG_NSLOOKUP
-          ./scripts/config --enable CONFIG_NETSTAT
-          ./scripts/config --enable CONFIG_TELNET
-          ./scripts/config --enable CONFIG_NC
-          ./scripts/config --enable CONFIG_HTTPD
-
-          make oldconfig
-          make -j$(nproc) 2>&1 | tail -10
+      
+          # 网络工具
+          sed -i 's/# CONFIG_IFCONFIG is not set/CONFIG_IFCONFIG=y/' .config
+          sed -i 's/# CONFIG_IP is not set/CONFIG_IP=y/' .config
+          sed -i 's/# CONFIG_ROUTE is not set/CONFIG_ROUTE=y/' .config
+          sed -i 's/# CONFIG_UDHCPC is not set/CONFIG_UDHCPC=y/' .config
+          sed -i 's/# CONFIG_IFUP is not set/CONFIG_IFUP=y/' .config
+          sed -i 's/# CONFIG_IFDOWN is not set/CONFIG_IFDOWN=y/' .config
+          sed -i 's/# CONFIG_PING is not set/CONFIG_PING=y/' .config
+          sed -i 's/# CONFIG_WGET is not set/CONFIG_WGET=y/' .config
+          sed -i 's/# CONFIG_NSLOOKUP is not set/CONFIG_NSLOOKUP=y/' .config
+          sed -i 's/# CONFIG_NETSTAT is not set/CONFIG_NETSTAT=y/' .config
+          sed -i 's/# CONFIG_TELNET is not set/CONFIG_TELNET=y/' .config
+          sed -i 's/# CONFIG_NC is not set/CONFIG_NC=y/' .config
+          sed -i 's/# CONFIG_HTTPD is not set/CONFIG_HTTPD=y/' .config
+      
+          # UDHCPC 默认脚本
+          sed -i 's/# CONFIG_UDHCPC_DEFAULT_SCRIPT is not set/CONFIG_UDHCPC_DEFAULT_SCRIPT=y/' .config
+      
+          # 确认配置生效
+          yes "" | make oldconfig
+      
+          # 编译
+          make -j$(nproc) 2>&1 | tee build.log | tail -10
+      
+          # 检查是否编译成功
+          if [ ! -f busybox ]; then
+            echo "Build failed!"
+            tail -50 build.log
+            exit 1
+          fi
+      
           make install
-
           echo "BUSYBOX_INSTALL=$PWD/_install" >> $GITHUB_ENV
+
 
       # ============================================================
       # 6. 制作 initramfs
