@@ -46,10 +46,12 @@ jobs:
       # ============================================================
       - name: Download Kernel Source
         run: |
-          echo "Downloading Linux $KERNEL_VERSION..."
-          wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz"
-          tar -Jxf "linux-$KERNEL_VERSION.tar.xz"
+          echo "Cloning Linux Kernel v$KERNEL_VERSION..."
+          git clone --depth 1 --branch "v$KERNEL_VERSION" \
+            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
+            "linux-$KERNEL_VERSION"
           echo "KERNEL_DIR=$PWD/linux-$KERNEL_VERSION" >> $GITHUB_ENV
+
 
       # ============================================================
       # 3. 配置内核
