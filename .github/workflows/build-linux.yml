@@ -43,7 +43,7 @@ jobs:
             ccache qemu-system-x86 qemu-utils \
             wget xz-utils cpio gzip \
             grub-pc-bin grub-efi-amd64-bin xorriso mtools \
-            isolinux syslinux-common ovmf
+            isolinux syslinux-common  musl-tools bc pkg-config
 
       # ============================================================
       # 2. 下载内核源码
@@ -98,37 +98,19 @@ jobs:
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
 
           make olddefconfig
-
       # ============================================================
-      # 4. 编译内核
-      # ============================================================
-      - name: Build Kernel
-        run: |
-          cd "$KERNEL_DIR"
-          echo "Build started at $(date)"
-          START=$(date +%s)
-
-          make -j$(nproc) 2>&1 | tail -100
-
-          END=$(date +%s)
-          echo "Build time: $((END - START)) seconds"
-          echo "BUILD_TIME=$((END - START))" >> $GITHUB_ENV
-
-          ls -lh arch/x86/boot/bzImage
-          echo "BZIMAGE_PATH=$KERNEL_DIR/arch/x86/boot/bzImage" >> $GITHUB_ENV
-
-      # ============================================================
-      # 5. 编译 BusyBox
+      # 4. 编译 BusyBox
       # ============================================================
       - name: Build BusyBox
         run: |
           wget -q "https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2"
           tar -xf "busybox-$BUSYBOX_VERSION.tar.bz2"
           cd "busybox-$BUSYBOX_VERSION"
+
           make defconfig
-      
-          # === 直接写入需要的配置（最可靠）===
-          cat >> .config << 'EOL'
+
+          # 直接覆盖配置（推荐使用 cat > 而不是 >>）
+          cat > .config << 'EOL'
           CONFIG_STATIC=y
           CONFIG_IFCONFIG=y
           CONFIG_IP=y
@@ -145,34 +127,56 @@ jobs:
           CONFIG_HTTPD=y
           CONFIG_UDHCPC_DEFAULT_SCRIPT=y
           
-          # 关闭可能引起问题的选项
+          # 关闭问题选项
           # CONFIG_TC is not set
+          # CONFIG_KLOGD is not set
+          # CONFIG_LOGGER is not set
           # CONFIG_SELINUX is not set
-          # CONFIG_FEATURE_SYSLOGD_CFG is not set  # 如果不需要复杂配置
           EOL
-      
-          # 用这个命令强制应用配置
+
+          # 应用配置
+          make olddefconfig >/dev/null 2>&1 || true
           make oldconfig < /dev/null 2>&1 || true
-          # 或者备用方案
-          yes "" | make oldconfig 2>&1 | cat
-      
-          echo "=== 配置完成，CONFIG_STATIC 检查 ==="
-          grep -E "CONFIG_STATIC|CONFIG_TC" .config
-      
-          # 编译（去掉 tail，只 tee）
+
+          echo "=== CONFIG 检查 ==="
+          grep -E "CONFIG_STATIC=|CONFIG_TC=" .config
+
+          # 编译（完整输出）
+          echo "=== 开始编译 BusyBox ==="
           make -j$(nproc) 2>&1 | tee build.log
-          
-          echo "=== Build 最后 80 行日志 ==="
-          tail -80 build.log
-          
-          if [ ! -f busybox ] && [ ! -f busybox_unstripped ]; then
-            echo "Build failed! No busybox binary generated."
+
+          echo "=== 最后 100 行日志 ==="
+          tail -100 build.log
+
+          # 检查结果
+          if [ -f busybox ] || [ -f busybox_unstripped ]; then
+            echo "✅ Build successful!"
+            ls -lh busybox*
+            make install CONFIG_PREFIX=_install
+            echo "BUSYBOX_INSTALL=$PWD/_install" >> $GITHUB_ENV
+          else
+            echo "❌ Build failed! No busybox binary generated."
             exit 1
           fi
-      
-          make install
-          echo "BUSYBOX_INSTALL=$PWD/_install" >> $GITHUB_ENV
+      # ============================================================
+      # 5. 编译内核
+      # ============================================================
+      - name: Build Kernel
+        run: |
+          cd "$KERNEL_DIR"
+          echo "Build started at $(date)"
+          START=$(date +%s)
 
+          make -j$(nproc) 2>&1 | tail -100
+
+          END=$(date +%s)
+          echo "Build time: $((END - START)) seconds"
+          echo "BUILD_TIME=$((END - START))" >> $GITHUB_ENV
+
+          ls -lh arch/x86/boot/bzImage
+          echo "BZIMAGE_PATH=$KERNEL_DIR/arch/x86/boot/bzImage" >> $GITHUB_ENV
+
+      
 
       # ============================================================
       # 6. 制作 initramfs
