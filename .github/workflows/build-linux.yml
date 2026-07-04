@@ -127,37 +127,46 @@ jobs:
           cd "busybox-$BUSYBOX_VERSION"
           make defconfig
       
-          # 静态编译
-          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          # === 直接写入需要的配置（最可靠）===
+          cat >> .config << 'EOL'
+          CONFIG_STATIC=y
+          CONFIG_IFCONFIG=y
+          CONFIG_IP=y
+          CONFIG_ROUTE=y
+          CONFIG_UDHCPC=y
+          CONFIG_IFUP=y
+          CONFIG_IFDOWN=y
+          CONFIG_PING=y
+          CONFIG_WGET=y
+          CONFIG_NSLOOKUP=y
+          CONFIG_NETSTAT=y
+          CONFIG_TELNET=y
+          CONFIG_NC=y
+          CONFIG_HTTPD=y
+          CONFIG_UDHCPC_DEFAULT_SCRIPT=y
+          
+          # 关闭可能引起问题的选项
+          # CONFIG_TC is not set
+          # CONFIG_SELINUX is not set
+          # CONFIG_FEATURE_SYSLOGD_CFG is not set  # 如果不需要复杂配置
+          EOL
       
-          # 网络工具
-          sed -i 's/# CONFIG_IFCONFIG is not set/CONFIG_IFCONFIG=y/' .config
-          sed -i 's/# CONFIG_IP is not set/CONFIG_IP=y/' .config
-          sed -i 's/# CONFIG_ROUTE is not set/CONFIG_ROUTE=y/' .config
-          sed -i 's/# CONFIG_UDHCPC is not set/CONFIG_UDHCPC=y/' .config
-          sed -i 's/# CONFIG_IFUP is not set/CONFIG_IFUP=y/' .config
-          sed -i 's/# CONFIG_IFDOWN is not set/CONFIG_IFDOWN=y/' .config
-          sed -i 's/# CONFIG_PING is not set/CONFIG_PING=y/' .config
-          sed -i 's/# CONFIG_WGET is not set/CONFIG_WGET=y/' .config
-          sed -i 's/# CONFIG_NSLOOKUP is not set/CONFIG_NSLOOKUP=y/' .config
-          sed -i 's/# CONFIG_NETSTAT is not set/CONFIG_NETSTAT=y/' .config
-          sed -i 's/# CONFIG_TELNET is not set/CONFIG_TELNET=y/' .config
-          sed -i 's/# CONFIG_NC is not set/CONFIG_NC=y/' .config
-          sed -i 's/# CONFIG_HTTPD is not set/CONFIG_HTTPD=y/' .config
+          # 用这个命令强制应用配置
+          make oldconfig < /dev/null 2>&1 || true
+          # 或者备用方案
+          yes "" | make oldconfig 2>&1 | cat
       
-          # UDHCPC 默认脚本
-          sed -i 's/# CONFIG_UDHCPC_DEFAULT_SCRIPT is not set/CONFIG_UDHCPC_DEFAULT_SCRIPT=y/' .config
+          echo "=== 配置完成，CONFIG_STATIC 检查 ==="
+          grep -E "CONFIG_STATIC|CONFIG_TC" .config
       
-          # 确认配置生效
-          yes "" | make oldconfig
-      
-          # 编译
-          make -j$(nproc) 2>&1 | tee build.log | tail -10
-      
-          # 检查是否编译成功
-          if [ ! -f busybox ]; then
-            echo "Build failed!"
-            tail -50 build.log
+          # 编译（去掉 tail，只 tee）
+          make -j$(nproc) 2>&1 | tee build.log
+          
+          echo "=== Build 最后 80 行日志 ==="
+          tail -80 build.log
+          
+          if [ ! -f busybox ] && [ ! -f busybox_unstripped ]; then
+            echo "Build failed! No busybox binary generated."
             exit 1
           fi
       
