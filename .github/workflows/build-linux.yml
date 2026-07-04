@@ -347,7 +347,7 @@ jobs:
             -V "CUSTOM_LINUX" \
             --modules="part_msdos ext2 fat iso9660 normal boot linux" 2>&1
 
-          ls -lh "$GITHUB_WORKSPACE/linux-bootable.iso"
+          ls -lh "$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso"
 
           # 验证 ISO 结构
           echo "=== ISO contents ==="
