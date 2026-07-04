@@ -27,6 +27,8 @@ env:
   KERNEL_VERSION: ${{ github.event.inputs.kernel_version || '7.1.2' }}
   CONFIG_TYPE: ${{ github.event.inputs.config_type || 'defconfig' }}
   BUSYBOX_VERSION: ${{ github.event.inputs.busybox_version || '1.38.0' }}
+  ISO_BUSYBOX: "linux-bootable-busybox-${{ github.event.inputs.kernel_version }}.iso"
+  ISO_GNU: "linux-bootable-gnu-${{ github.event.inputs.kernel_version }}.iso"
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -173,6 +175,17 @@ jobs:
             echo "❌ Build failed!"
             exit 1
           fi
+      - name: Build GNU Coreutils and Bash
+        run: |
+          wget -q https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz -O bash.tar.gz
+          tar -xzf bash.tar.gz
+          cd bash-5.3 && ./configure --prefix=/usr --without-bash-malloc --disable-nls && make -j$(nproc) CFLAGS="-Os -s" && make install DESTDIR=$PWD/install && cd ..
+
+          wget -q https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz -O coreutils.tar.xz
+          tar -xf coreutils.tar.xz
+          cd coreutils-9.11 && ./configure --prefix=/usr --enable-no-install-program=kill,uptime --disable-nls CFLAGS="-Os -s" && make -j$(nproc) && make install DESTDIR=$PWD/install && cd ..
+
+          echo "GNU_TOOLS_INSTALL=$PWD" >> $GITHUB_ENV
       # ============================================================
       # 5. 编译内核
       # ============================================================
@@ -196,33 +209,23 @@ jobs:
       # ============================================================
       # 6. 制作 initramfs
       # ============================================================
-      - name: Create Initramfs
+      - name: Create Initramfs - BusyBox Version
         run: |
-          echo "=== Building initramfs ==="
-          INITRAMFS_DIR="$PWD/initramfs"
+          echo "=== Creating BusyBox Initramfs ==="
+          INITRAMFS_DIR="$PWD/initramfs-busybox"
           mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,etc/network,proc,sys,dev,lib,usr/bin,usr/sbin,usr/share/udhcpc,var,run,tmp,root}
           chmod 1777 "$INITRAMFS_DIR/tmp"
 
           # 复制 BusyBox
           cp -a "$BUSYBOX_INSTALL"/* "$INITRAMFS_DIR/"
 
-          # === 新增：创建常用命令的软链接（极大提升易用性）===
-          echo "Creating symlinks for common commands..."
+          # 创建常用命令软链接
           cd "$INITRAMFS_DIR/bin"
-          for cmd in sh ash ls cp mv rm cat echo grep find tar mkdir rmdir ln ps top kill mount umount df du free uptime clear; do
+          for cmd in ls cp mv rm cat echo grep find tar mkdir vi; do
               ln -s busybox "$cmd" 2>/dev/null || true
           done
 
-          # vi 编辑器（强烈推荐）
-          ln -s busybox vi 2>/dev/null || true
-
-          # network 工具软链接
-          cd "$INITRAMFS_DIR/sbin"
-          for cmd in ifconfig ip route udhcpc; do
-              ln -s ../bin/busybox "$cmd" 2>/dev/null || true
-          done
-
-          # 网络配置
+          # 网络配置（保持你原来的）
           cat > "$INITRAMFS_DIR/etc/network/interfaces" << 'CONF'
           auto eth0
           iface eth0 inet dhcp
@@ -231,22 +234,16 @@ jobs:
           cat > "$INITRAMFS_DIR/usr/share/udhcpc/default.script" << 'SCRIPT'
           #!/bin/sh
           case "$1" in
-              deconfig)
-                  ifconfig $interface 0.0.0.0
-                  ;;
+              deconfig) ifconfig $interface 0.0.0.0 ;;
               bound|renew)
                   ifconfig $interface $ip netmask $subnet
                   if [ -n "$router" ]; then
                       route del default gw 0.0.0.0 dev $interface 2>/dev/null
-                      for i in $router; do
-                          route add default gw $i dev $interface
-                      done
+                      for i in $router; do route add default gw $i dev $interface; done
                   fi
                   if [ -n "$dns" ]; then
                       > /etc/resolv.conf
-                      for i in $dns; do
-                          echo "nameserver $i" >> /etc/resolv.conf
-                      done
+                      for i in $dns; do echo "nameserver $i" >> /etc/resolv.conf; done
                   fi
                   ;;
           esac
@@ -266,46 +263,116 @@ jobs:
           root:x:0:
           GROUP
 
-          # init 脚本（优化版）
           cat > "$INITRAMFS_DIR/init" << 'INIT'
           #!/bin/sh
-          echo "Mounting filesystems..."
           mount -t proc none /proc
           mount -t sysfs none /sys
           mount -t devtmpfs none /dev
           mount -t tmpfs none /tmp
-          
-          echo "============================================"
-          echo "   Custom Linux $KERNEL_VERSION (Live ISO)"
-          echo "============================================"
-          
-          echo "[*] Starting network (DHCP)..."
-          udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 8 -T 3 2>&1 | cat
-          
-          echo ""
-          echo "[*] Network status:"
-          ifconfig eth0 2>/dev/null || echo "eth0 not found"
-          echo ""
-          echo "[*] System ready! Type commands or 'vi' to edit files."
-          echo "============================================"
-          
+          echo "BusyBox Linux $KERNEL_VERSION ready!"
           exec /bin/sh
           INIT
           chmod +x "$INITRAMFS_DIR/init"
 
-          # 打包 initramfs
           cd "$INITRAMFS_DIR"
-          find . | cpio -H newc -o | gzip -9 > "$GITHUB_WORKSPACE/initramfs.cpio.gz"
-          cd "$GITHUB_WORKSPACE"
+          find . | cpio -H newc -o | gzip -9 > "$GITHUB_WORKSPACE/initramfs-busybox.cpio.gz"
+          echo "INITRAMFS_BUSYBOX=$GITHUB_WORKSPACE/initramfs-busybox.cpio.gz" >> $GITHUB_ENV
+      - name: Create Initramfs - GNU Version
+        run: |
+          echo "=== Creating GNU Initramfs ==="
+          INITRAMFS_DIR="$PWD/initramfs-gnu"
+          mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,etc/network,proc,sys,dev,lib,lib64,usr/bin,usr/sbin,usr/share/udhcpc,var,run,tmp,root}
+          chmod 1777 "$INITRAMFS_DIR/tmp"
 
-          echo "=== initramfs 打包完成 ==="
-          ls -lh initramfs.cpio.gz
-          echo "INITRAMFS_PATH=$GITHUB_WORKSPACE/initramfs.cpio.gz" >> $GITHUB_ENV
+          # 复制 GNU 工具
+          cp "$GNU_TOOLS_INSTALL/bash-5.2.37/install/usr/bin/bash" "$INITRAMFS_DIR/bin/" || true
+          cp -a "$GNU_TOOLS_INSTALL/coreutils-9.6/install/usr/bin/"* "$INITRAMFS_DIR/usr/bin/" || true
 
+          # 软链接
+          cd "$INITRAMFS_DIR/bin"
+          ln -sf bash sh || true
+          ln -sf ../usr/bin/coreutils ls || true
+          ln -sf ../usr/bin/coreutils cp || true
+          ln -sf ../usr/bin/coreutils mv || true
+          ln -sf ../usr/bin/coreutils rm || true
+
+          # 网络和配置（同上）
+          cat > "$INITRAMFS_DIR/etc/network/interfaces" << 'CONF'
+          auto eth0
+          iface eth0 inet dhcp
+          CONF
+
+          cat > "$INITRAMFS_DIR/usr/share/udhcpc/default.script" << 'SCRIPT'
+          #!/bin/sh
+          case "$1" in
+              deconfig) ifconfig $interface 0.0.0.0 ;;
+              bound|renew)
+                  ifconfig $interface $ip netmask $subnet
+                  if [ -n "$router" ]; then
+                      route del default gw 0.0.0.0 dev $interface 2>/dev/null
+                      for i in $router; do route add default gw $i dev $interface; done
+                  fi
+                  if [ -n "$dns" ]; then
+                      > /etc/resolv.conf
+                      for i in $dns; do echo "nameserver $i" >> /etc/resolv.conf; done
+                  fi
+                  ;;
+          esac
+          SCRIPT
+          chmod +x "$INITRAMFS_DIR/usr/share/udhcpc/default.script"
+
+          cat > "$INITRAMFS_DIR/etc/resolv.conf" << 'DNS'
+          nameserver 8.8.8.8
+          nameserver 1.1.1.1
+          DNS
+
+          cat > "$INITRAMFS_DIR/etc/passwd" << 'PASSWD'
+          root::0:0:root:/root:/bin/bash
+          PASSWD
+
+          cat > "$INITRAMFS_DIR/etc/group" << 'GROUP'
+          root:x:0:
+          GROUP
+
+          cat > "$INITRAMFS_DIR/init" << 'INIT'
+          #!/bin/bash
+          mount -t proc none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev
+          mount -t tmpfs none /tmp
+          echo "GNU Linux $KERNEL_VERSION ready! (bash + coreutils)"
+          exec /bin/bash
+          INIT
+          chmod +x "$INITRAMFS_DIR/init"
+
+          cd "$INITRAMFS_DIR"
+          find . | cpio -H newc -o | gzip -9 > "$GITHUB_WORKSPACE/initramfs-gnu.cpio.gz"
+          echo "INITRAMFS_GNU=$GITHUB_WORKSPACE/initramfs-gnu.cpio.gz" >> $GITHUB_ENV
       # ============================================================
       # 7. 打包为可启动 ISO（GRUB2 方案，支持 BIOS + UEFI）
       # ============================================================
-      - name: Create Bootable ISO
+      - name: Create ISO - GNU Version
+        run: |
+          echo "=== Creating GNU Version ISO ==="
+          ISO_DIR="$PWD/iso-gnu"
+          mkdir -p "$ISO_DIR/boot/grub"
+          
+          cp "$BZIMAGE_PATH" "$ISO_DIR/boot/bzImage"
+          cp "$INITRAMFS_GNU" "$ISO_DIR/boot/initramfs.cpio.gz"   # 使用 GNU initramfs
+          
+          # GRUB 配置（GNU 版）
+          cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB'
+          set timeout=3
+          menuentry "Custom Linux (GNU Version)" {
+              linux /boot/bzImage console=tty0
+              initrd /boot/initramfs.cpio.gz
+          }
+          GRUB
+          
+          grub-mkrescue -o "$GITHUB_WORKSPACE/$ISO_GNU" "$ISO_DIR"
+          ls -lh "$GITHUB_WORKSPACE/$ISO_GNU"
+          
+      - name: Create ISO - BusyBox Version
         run: |
           echo "=== Creating bootable ISO ==="
           ISO_DIR="$PWD/iso_build"
@@ -345,18 +412,18 @@ jobs:
           GRUBCFG
 
           # 使用 grub-mkrescue 生成 Hybrid ISO
-          grub-mkrescue -o "$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso" "$ISO_DIR" \
+          grub-mkrescue -o "$GITHUB_WORKSPACE/linux-bootable.iso" "$ISO_DIR" \
             -V "CUSTOM_LINUX" \
             --modules="part_msdos ext2 fat iso9660 normal boot linux" 2>&1
 
-          ls -lh "$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso"
+          ls -lh "$GITHUB_WORKSPACE/linux-bootable.iso"
 
           # 验证 ISO 结构
           echo "=== ISO contents ==="
-          xorriso -indev "$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso" \
+          xorriso -indev "$GITHUB_WORKSPACE/linux-bootable.iso" \
             -find / 2>/dev/null | head -30
-
-          echo "ISO_PATH=$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso" >> $GITHUB_ENV
+          mv linux-bootable.iso "$ISO_BUSYBOX"
+          echo "ISO_BUSYBOX_PATH=$ISO_BUSYBOX" >> $GITHUB_ENV
 
       # ============================================================
       # 8. QEMU 启动测试
@@ -365,7 +432,13 @@ jobs:
         run: |
           echo "=== QEMU BIOS Boot Test (15s timeout) ==="
           timeout 15 qemu-system-x86_64 \
-            -cdrom "$ISO_PATH" \
+            -cdrom "${{ env.ISO_GNU }}" \
+            -m 512M \
+            -netdev user,id=net0 \
+            -device e1000,netdev=net0 \
+            -nographic 2>&1 | tail -40 || true
+          timeout 15 qemu-system-x86_64 \
+            -cdrom "${{ env.ISO_BUSYBOX }}" \
             -m 512M \
             -netdev user,id=net0 \
             -device e1000,netdev=net0 \
@@ -375,7 +448,15 @@ jobs:
         run: |
           echo "=== QEMU UEFI Boot Test (15s timeout) ==="
           timeout 15 qemu-system-x86_64 \
-            -cdrom "$ISO_PATH" \
+            -cdrom "${{ env.ISO_GNU }}" \
+            -m 512M \
+            -bios /usr/share/OVMF/OVMF_CODE.fd \
+            -netdev user,id=net0 \
+            -device e1000,netdev=net0 \
+            -nographic 2>&1 | tail -40 || true
+            
+          timeout 15 qemu-system-x86_64 \
+            -cdrom "${{ env.ISO_BUSYBOX }}" \
             -m 512M \
             -bios /usr/share/OVMF/OVMF_CODE.fd \
             -netdev user,id=net0 \
@@ -385,26 +466,27 @@ jobs:
       # ============================================================
       # 9. 上传产物
       # ============================================================
-      - name: Upload ISO
+      - name: Upload Both ISOs
         uses: actions/upload-artifact@v4
         with:
-          name: linux-bootable-iso-${{ env.KERNEL_VERSION }}
-          path: ${{ env.ISO_PATH }}
-          retention-days: 7
+          name: linux-bootable-${{ env.KERNEL_VERSION }}
+          path: |
+            ${{ env.ISO_BUSYBOX }}
+            ${{ env.ISO_GNU }}
 
-      - name: Upload bzImage
-        uses: actions/upload-artifact@v4
-        with:
-          name: bzImage-${{ env.KERNEL_VERSION }}
-          path: ${{ env.BZIMAGE_PATH }}
-          retention-days: 7
+      # - name: Upload bzImage
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: bzImage-${{ env.KERNEL_VERSION }}
+      #     path: ${{ env.BZIMAGE_PATH }}
+      #     retention-days: 7
 
-      - name: Upload Initramfs
-        uses: actions/upload-artifact@v4
-        with:
-          name: initramfs-${{ env.KERNEL_VERSION }}
-          path: ${{ env.INITRAMFS_PATH }}
-          retention-days: 7
+      # - name: Upload Initramfs
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: initramfs-${{ env.KERNEL_VERSION }}
+      #     path: ${{ env.INITRAMFS_PATH }}
+      #     retention-days: 7
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
@@ -420,9 +502,12 @@ jobs:
             - **initramfs**: 初始内存盘
             构建时间: ${{ github.event.head_commit.timestamp }}
           files: |
-            ${{ env.ISO_PATH }}
+            ${{ env.ISO_BUSYBOX }}
+            ${{ env.ISO_GNU }}
+            ${{ env.INITRAMFS_GNU }}
+            ${{ env.INITRAMFS_BUSYBOX }}
             ${{ env.BZIMAGE_PATH }}
-            ${{ env.INITRAMFS_PATH }}
+            
         # env:
         #   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
@@ -441,18 +526,22 @@ jobs:
             echo "| Kernel Version | $KERNEL_VERSION |"
             echo "| Config Type | $CONFIG_TYPE |"
             echo "| Build Time | ${{ env.BUILD_TIME }} seconds |"
-            echo "| ISO Size | $(ls -lh $ISO_PATH | awk '{print $5}') |"
-            echo "| bzImage Size | $(ls -lh $BZIMAGE_PATH | awk '{print $5}') |"
-            echo "| Initramfs Size | $(ls -lh $INITRAMFS_PATH | awk '{print $5}') |"
+            echo "| ISO BUSYBOX Size | $(ls -lh ${{ env.ISO_BUSYBOX }} | awk '{print $5}') |"
+            echo "| ISO GNU Size | $(ls -lh ${{ env.ISO_GNU }} | awk '{print $5}') |"
+            echo "| bzImage Size | $(ls -lh ${{ env.BZIMAGE_PATH  }}| awk '{print $5}') |"
+            echo "| Initramfs BUSYBOX Size | $(ls -lh ${{ env.INITRAMFS_BUSYBOX  }} | awk '{print $5}') |"
+            echo "| Initramfs GNU Size | $(ls -lh ${{ env.INITRAMFS_GNU  }} | awk '{print $5}') |"
             echo ""
             echo "### How to Use"
             echo ""
             echo '```bash'
             echo "# QEMU 测试"
-            echo "qemu-system-x86_64 -cdrom linux-bootable.iso -m 512M -nographic"
+            echo "qemu-system-x86_64 -cdrom ${{ env.ISO_GNU }} -m 512M -nographic"
+            echo "qemu-system-x86_64 -cdrom ${{ env.ISO_BUSYBOX }} -m 512M -nographic"
             echo ""
             echo "# 写入 U 盘"
-            echo "sudo dd if=linux-bootable.iso of=/dev/sdX bs=4M status=progress"
+            echo "sudo dd if=${{ env.ISO_GNU }} of=/dev/sdX bs=4M status=progress"
+            echo "sudo dd if=${{ env.ISO_BUSYBOX }} of=/dev/sdX bs=4M status=progress"
             echo "sync"
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
