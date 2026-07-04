@@ -127,7 +127,22 @@ jobs:
           CONFIG_NC=y
           CONFIG_HTTPD=y
           CONFIG_UDHCPC_DEFAULT_SCRIPT=y
-          
+          CONFIG_SH=y
+          CONFIG_ASH=y
+          CONFIG_BASH=y 
+          CONFIG_VI=y
+          CONFIG_LS=y
+          CONFIG_CP=y
+          CONFIG_MV=y
+          CONFIG_RM=y
+          CONFIG_CAT=y
+          CONFIG_ECHO=y
+          CONFIG_GREP=y
+          CONFIG_FIND=y
+          CONFIG_TAR=y
+          CONFIG_GZIP=y
+          CONFIG_MOUNT=y
+          CONFIG_UMOUNT=y
           # 关闭问题选项
           # CONFIG_TC is not set
           # CONFIG_KLOGD is not set
@@ -183,11 +198,27 @@ jobs:
         run: |
           echo "=== Building initramfs ==="
           INITRAMFS_DIR="$PWD/initramfs"
-          mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,etc/network,proc,sys,dev,lib,usr,usr/share,usr/share/udhcpc,var,run,tmp,root}
+          mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,etc/network,proc,sys,dev,lib,usr/bin,usr/sbin,usr/share/udhcpc,var,run,tmp,root}
           chmod 1777 "$INITRAMFS_DIR/tmp"
 
           # 复制 BusyBox
           cp -a "$BUSYBOX_INSTALL"/* "$INITRAMFS_DIR/"
+
+          # === 新增：创建常用命令的软链接（极大提升易用性）===
+          echo "Creating symlinks for common commands..."
+          cd "$INITRAMFS_DIR/bin"
+          for cmd in sh ash ls cp mv rm cat echo grep find tar mkdir rmdir ln ps top kill mount umount df du free uptime clear; do
+              ln -s busybox "$cmd" 2>/dev/null || true
+          done
+
+          # vi 编辑器（强烈推荐）
+          ln -s busybox vi 2>/dev/null || true
+
+          # network 工具软链接
+          cd "$INITRAMFS_DIR/sbin"
+          for cmd in ifconfig ip route udhcpc; do
+              ln -s ../bin/busybox "$cmd" 2>/dev/null || true
+          done
 
           # 网络配置
           cat > "$INITRAMFS_DIR/etc/network/interfaces" << 'CONF'
@@ -233,47 +264,29 @@ jobs:
           root:x:0:
           GROUP
 
-          # init 脚本
+          # init 脚本（优化版）
           cat > "$INITRAMFS_DIR/init" << 'INIT'
           #!/bin/sh
+          echo "Mounting filesystems..."
           mount -t proc none /proc
           mount -t sysfs none /sys
           mount -t devtmpfs none /dev
           mount -t tmpfs none /tmp
-
+          
           echo "============================================"
-          echo "  Custom Linux $KERNEL_VERSION (ISO Boot)   "
+          echo "   Custom Linux $KERNEL_VERSION (Live ISO)"
           echo "============================================"
-          echo ""
-
-          echo "[*] CPU Info:"
-          cat /proc/cpuinfo | head -5
-          echo ""
-
-          echo "[*] Memory:"
-          cat /proc/meminfo | head -3
-          echo ""
-
-          echo "[*] Network interfaces:"
-          ls /sys/class/net/
-          echo ""
-
+          
           echo "[*] Starting network (DHCP)..."
-          udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 5 -T 2 2>&1
+          udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -t 8 -T 3 2>&1 | cat
+          
           echo ""
-
           echo "[*] Network status:"
           ifconfig eth0 2>/dev/null || echo "eth0 not found"
           echo ""
-
-          echo "[*] Ping test:"
-          ping -c 3 8.8.8.8 2>&1 || echo "Ping failed"
-          echo ""
-
+          echo "[*] System ready! Type commands or 'vi' to edit files."
           echo "============================================"
-          echo "  System ready! Dropping to shell."
-          echo "============================================"
-
+          
           exec /bin/sh
           INIT
           chmod +x "$INITRAMFS_DIR/init"
@@ -282,8 +295,9 @@ jobs:
           cd "$INITRAMFS_DIR"
           find . | cpio -H newc -o | gzip -9 > "$GITHUB_WORKSPACE/initramfs.cpio.gz"
           cd "$GITHUB_WORKSPACE"
-          ls -lh initramfs.cpio.gz
 
+          echo "=== initramfs 打包完成 ==="
+          ls -lh initramfs.cpio.gz
           echo "INITRAMFS_PATH=$GITHUB_WORKSPACE/initramfs.cpio.gz" >> $GITHUB_ENV
 
       # ============================================================
@@ -329,7 +343,7 @@ jobs:
           GRUBCFG
 
           # 使用 grub-mkrescue 生成 Hybrid ISO
-          grub-mkrescue -o "$GITHUB_WORKSPACE/linux-bootable.iso" "$ISO_DIR" \
+          grub-mkrescue -o "$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso" "$ISO_DIR" \
             -V "CUSTOM_LINUX" \
             --modules="part_msdos ext2 fat iso9660 normal boot linux" 2>&1
 
@@ -337,10 +351,10 @@ jobs:
 
           # 验证 ISO 结构
           echo "=== ISO contents ==="
-          xorriso -indev "$GITHUB_WORKSPACE/linux-bootable.iso" \
+          xorriso -indev "$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso" \
             -find / 2>/dev/null | head -30
 
-          echo "ISO_PATH=$GITHUB_WORKSPACE/linux-bootable.iso" >> $GITHUB_ENV
+          echo "ISO_PATH=$GITHUB_WORKSPACE/linux-bootable-$KERNEL_VERSION.iso" >> $GITHUB_ENV
 
       # ============================================================
       # 8. QEMU 启动测试
@@ -389,7 +403,29 @@ jobs:
           name: initramfs-${{ env.KERNEL_VERSION }}
           path: ${{ env.INITRAMFS_PATH }}
           retention-days: 7
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: Linux-${{ env.KERNEL_VERSION }}
+          name: Linux Bootable ISO - ${{ env.KERNEL_VERSION }}
+          draft: false
+          prerelease: false
+          body: |
+            ## Custom Linux ${{ env.KERNEL_VERSION }}
 
+            - **ISO**: 可直接启动的 Live 系统
+            - **bzImage**: 内核镜像
+            - **initramfs**: 初始内存盘
+            构建时间: ${{ github.event.head_commit.timestamp }}
+          files: |
+            ${{ env.ISO_PATH }}
+            ${{ env.BZIMAGE_PATH }}
+            ${{ env.INITRAMFS_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+
+            
       # ============================================================
       # 10. 构建摘要
       # ============================================================
