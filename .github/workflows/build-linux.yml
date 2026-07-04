@@ -380,7 +380,7 @@ jobs:
 
           # 复制内核和 initramfs
           cp "$BZIMAGE_PATH" "$ISO_DIR/boot/bzImage"
-          cp "$INITRAMFS_PATH" "$ISO_DIR/boot/initramfs.cpio.gz"
+          cp "$INITRAMFS_BUSYBOX" "$ISO_DIR/boot/initramfs.cpio.gz"
 
           # 创建 GRUB 配置
           cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUBCFG'
