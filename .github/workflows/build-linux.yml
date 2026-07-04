@@ -20,7 +20,9 @@ on:
           - defconfig
           - allmodconfig
           - localmodconfig
-
+permissions:
+  contents: write   # 允许创建 Release
+  
 env:
   KERNEL_VERSION: ${{ github.event.inputs.kernel_version || '7.1.2' }}
   CONFIG_TYPE: ${{ github.event.inputs.config_type || 'defconfig' }}
@@ -421,8 +423,8 @@ jobs:
             ${{ env.ISO_PATH }}
             ${{ env.BZIMAGE_PATH }}
             ${{ env.INITRAMFS_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # env:
+        #   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
 
             
