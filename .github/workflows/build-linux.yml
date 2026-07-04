@@ -123,8 +123,8 @@ jobs:
       - name: Build BusyBox
         run: |
           wget -q "https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2"
-          tar -xf busybox-*.tar.bz2
-          cd busybox-*
+          tar -xf "busybox-$BUSYBOX_VERSION.tar.bz2"
+          cd "busybox-$BUSYBOX_VERSION"
           make defconfig
       
           # 静态编译
