@@ -283,11 +283,27 @@ jobs:
           INITRAMFS_DIR="$PWD/initramfs-gnu"
           mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,etc/network,proc,sys,dev,lib,lib64,usr/bin,usr/sbin,usr/share/udhcpc,var,run,tmp,root}
           chmod 1777 "$INITRAMFS_DIR/tmp"
+          echo "Copying shared libraries..."
+          mkdir -p "$INITRAMFS_DIR/lib/x86_64-linux-gnu"
+          mkdir -p "$INITRAMFS_DIR/lib64"
 
+          # 复制核心库
+          cp /lib/x86_64-linux-gnu/libc.so.6      "$INITRAMFS_DIR/lib/x86_64-linux-gnu/" 2>/dev/null || true
+          cp /lib/x86_64-linux-gnu/libtinfo.so.6  "$INITRAMFS_DIR/lib/x86_64-linux-gnu/" 2>/dev/null || true
+          cp /lib/x86_64-linux-gnu/libdl.so.2     "$INITRAMFS_DIR/lib/x86_64-linux-gnu/" 2>/dev/null || true
+          cp /lib/x86_64-linux-gnu/libpthread.so.0 "$INITRAMFS_DIR/lib/x86_64-linux-gnu/" 2>/dev/null || true
+
+          # 创建 ld-linux 链接
+          cp /lib64/ld-linux-x86-64.so.2 "$INITRAMFS_DIR/lib64/" 2>/dev/null || true
+          ln -s /lib64/ld-linux-x86-64.so.2 "$INITRAMFS_DIR/lib/ld-linux-x86-64.so.2" 2>/dev/null || true
+          
           # 复制 GNU 工具
           cp "$GNU_TOOLS_INSTALL/bash-5.2.37/install/usr/bin/bash" "$INITRAMFS_DIR/bin/" || true
           cp -a "$GNU_TOOLS_INSTALL/coreutils-9.6/install/usr/bin/"* "$INITRAMFS_DIR/usr/bin/" || true
-
+          cp /usr/bin/vim-tiny     "$INITRAMFS_DIR/usr/bin/vim" 2>/dev/null || true
+          cp /usr/bin/grep         "$INITRAMFS_DIR/bin/" 2>/dev/null || true
+          cp /usr/bin/sed          "$INITRAMFS_DIR/bin/" 2>/dev/null || true
+          cp /usr/bin/awk          "$INITRAMFS_DIR/bin/" 2>/dev/null || true
           # 软链接
           cd "$INITRAMFS_DIR/bin"
           ln -sf bash sh || true
@@ -506,7 +522,6 @@ jobs:
             ${{ env.ISO_GNU }}
             ${{ env.INITRAMFS_GNU }}
             ${{ env.INITRAMFS_BUSYBOX }}
-            ${{ env.BZIMAGE_PATH }}
             
         # env:
         #   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
