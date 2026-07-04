@@ -111,6 +111,7 @@ jobs:
 
           # 直接覆盖配置（推荐使用 cat > 而不是 >>）
           cat > .config << 'EOL'
+          CONFIG_DESKTOP=y
           CONFIG_STATIC=y
           CONFIG_IFCONFIG=y
           CONFIG_IP=y
@@ -134,28 +135,25 @@ jobs:
           # CONFIG_SELINUX is not set
           EOL
 
-          # 应用配置
-          make olddefconfig >/dev/null 2>&1 || true
-          make oldconfig < /dev/null 2>&1 || true
+          # 关键：用这个命令处理新选项
+          yes "" | make oldconfig >/dev/null 2>&1 || true
 
           echo "=== CONFIG 检查 ==="
-          grep -E "CONFIG_STATIC=|CONFIG_TC=" .config
+          grep -E "CONFIG_(STATIC|DESKTOP|TC)=" .config
 
-          # 编译（完整输出）
-          echo "=== 开始编译 BusyBox ==="
+          echo "=== 开始编译 ==="
           make -j$(nproc) 2>&1 | tee build.log
 
-          echo "=== 最后 100 行日志 ==="
-          tail -100 build.log
+          echo "=== 最后 80 行日志 ==="
+          tail -80 build.log
 
-          # 检查结果
           if [ -f busybox ] || [ -f busybox_unstripped ]; then
             echo "✅ Build successful!"
             ls -lh busybox*
             make install CONFIG_PREFIX=_install
             echo "BUSYBOX_INSTALL=$PWD/_install" >> $GITHUB_ENV
           else
-            echo "❌ Build failed! No busybox binary generated."
+            echo "❌ Build failed!"
             exit 1
           fi
       # ============================================================
