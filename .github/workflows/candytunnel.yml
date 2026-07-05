@@ -1,4 +1,4 @@
-name: Build and Release
+name: CandyTunnel Build and Release
 
 # 只保留手动触发
 on:
@@ -56,41 +56,41 @@ jobs:
           name: linux-binaries
           path: CandyTunnel-*-linux-x86_64-v*
 
-  build-windows:
-    name: Build Windows
-    runs-on: windows-latest
-    steps:
-      - name: Checkout AmiRCandy/CandyTunnel
-        uses: actions/checkout@v4
-        with:
-          repository: AmiRCandy/CandyTunnel
-          ref: ${{ github.ref }}
+  # build-windows:
+  #   name: Build Windows
+  #   runs-on: windows-latest
+  #   steps:
+  #     - name: Checkout AmiRCandy/CandyTunnel
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: AmiRCandy/CandyTunnel
+  #         ref: ${{ github.ref }}
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
+  #     - name: Install Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: x86_64-pc-windows-gnu
 
-      - name: Build Release
-        run: cargo build --release --bins
+  #     - name: Build Release
+  #       run: cargo build --release --bins
 
-      - name: Determine Version
-        id: version
-        shell: bash
-        run: echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+  #     - name: Determine Version
+  #       id: version
+  #       shell: bash
+  #       run: echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
 
-      - name: Rename binaries with version
-        shell: bash
-        run: |
-          cp target/release/client.exe CandyTunnel-client-windows-x86_64-v${{ steps.version.outputs.VERSION }}.exe
-          cp target/release/server.exe CandyTunnel-server-windows-x86_64-v${{ steps.version.outputs.VERSION }}.exe
-          cp target/release/candy-tunnel.exe CandyTunnel-windows-x86_64-v${{ steps.version.outputs.VERSION }}.exe
+  #     - name: Rename binaries with version
+  #       shell: bash
+  #       run: |
+  #         cp target/release/client.exe CandyTunnel-client-windows-x86_64-v${{ steps.version.outputs.VERSION }}.exe
+  #         cp target/release/server.exe CandyTunnel-server-windows-x86_64-v${{ steps.version.outputs.VERSION }}.exe
+  #         cp target/release/candy-tunnel.exe CandyTunnel-windows-x86_64-v${{ steps.version.outputs.VERSION }}.exe
 
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-binaries
-          path: CandyTunnel-*-windows-x86_64-v*
+  #     - name: Upload Windows Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: windows-binaries
+  #         path: CandyTunnel-*-windows-x86_64-v*
 
   build-macos:
     name: Build macOS
@@ -134,7 +134,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -156,5 +156,5 @@ jobs:
           prerelease: false
           files: |
             linux-binaries/*
-            windows-binaries/*
+            # windows-binaries/*
             macos-binaries/*
