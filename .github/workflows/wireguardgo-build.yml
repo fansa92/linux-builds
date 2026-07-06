@@ -59,7 +59,7 @@ jobs:
         run: |
           GOOS=${{ matrix.target }} \
           GOARCH=${{ matrix.arch }} \
-          go build -trimpath -ldflags="-s -w" -o wireguard-go-${{ matrix.suffix }} ./cmd/wireguard-go
+          go build -trimpath -ldflags="-s -w" -o wireguard-go-${{ matrix.suffix }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
