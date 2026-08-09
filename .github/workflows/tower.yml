@@ -12,7 +12,10 @@ on:
         description: '指定 tower 版本号（如 v1.0.0 或 latest）'
         required: true
         default: '1.0.0'
-
+        
+permissions:
+  contents: write   # 必须有，才能创建 release
+  
 jobs:
   build-ios:
     name: Build iOS App (No Signing)
