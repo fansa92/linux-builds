@@ -1,0 +1,181 @@
+name: Build Chromium iOS 137
+
+on:
+  workflow_dispatch:
+    inputs:
+      chromium_ref:
+        description: "Git ref (branch-heads/7151 or tag e.g. 137.0.7151.69)"
+        required: false
+        default: "branch-heads/7151"
+      release_tag:
+        description: "Release tag (e.g. chromium-ios-137.0.7151)"
+        required: false
+        default: "chromium-ios-137"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chromium-ios-137-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 360
+
+    env:
+      DEPOT_TOOLS_UPDATE: "0"
+      CHROMIUM_REF: ${{ github.event.inputs.chromium_ref || 'branch-heads/7151' }}
+      RELEASE_TAG: ${{ github.event.inputs.release_tag || 'chromium-ios-137' }}
+
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          sw_vers
+          xcodebuild -version || true
+          df -h
+          sysctl -n hw.ncpu
+          sysctl -n hw.memsize
+
+      - name: Install tools
+        run: |
+          brew install p7zip || true
+
+      - name: Clone depot_tools
+        run: |
+          rm -rf depot_tools
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "$(pwd)/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Fetch Chromium iOS sources
+        run: |
+          set -euo pipefail
+          export PATH="$(pwd)/depot_tools:$PATH"
+
+          rm -rf chromium
+          mkdir chromium
+          cd chromium
+          fetch ios
+
+          if ! grep -q 'target_os' .gclient 2>/dev/null; then
+            cat >> .gclient <<'EOF'
+          target_os = ["ios"]
+          target_os_only = True
+          EOF
+          fi
+
+      - name: Pin Chromium 137
+        run: |
+          set -euo pipefail
+          export PATH="$(pwd)/depot_tools:$PATH"
+          cd chromium/src
+
+          gclient sync --with_branch_heads --with_tags || true
+          git fetch origin --prune
+
+          REF="${CHROMIUM_REF}"
+          echo "Checking out: ${REF}"
+
+          if [[ "${REF}" == branch-heads/* ]]; then
+            BRANCH="${REF#branch-heads/}"
+            git fetch origin "refs/branch-heads/${BRANCH}:refs/remotes/origin/branch-heads/${BRANCH}" || \
+              git fetch origin "+refs/branch-heads/${BRANCH}:refs/remotes/origin/branch-heads/${BRANCH}"
+            git checkout -B "chromium-137" "branch-heads/${BRANCH}" || \
+              git checkout -B "chromium-137" "origin/branch-heads/${BRANCH}"
+          else
+            git fetch origin "refs/tags/${REF}:refs/tags/${REF}" || git fetch --tags
+            git checkout -B "chromium-137" "${REF}"
+          fi
+
+          gclient sync --with_branch_heads --with_tags -D --force --reset
+
+          echo "==== HEAD ===="
+          git log -1 --oneline
+          test -f chrome/VERSION && cat chrome/VERSION || true
+
+      - name: Generate out/Release-iphoneos
+        run: |
+          set -euo pipefail
+          export PATH="$(pwd)/depot_tools:$PATH"
+          cd chromium/src
+
+          mkdir -p out/Release-iphoneos
+          cat > out/Release-iphoneos/args.gn <<'EOF'
+          target_os = "ios"
+          target_cpu = "arm64"
+          is_debug = false
+          is_component_build = false
+          ios_enable_code_signing = false
+          EOF
+
+          gn gen out/Release-iphoneos
+
+      - name: Compile
+        run: |
+          set -euo pipefail
+          export PATH="$(pwd)/depot_tools:$PATH"
+          cd chromium/src
+          autoninja -C out/Release-iphoneos gn_all
+
+      - name: Pack IPA
+        id: pack
+        run: |
+          set -euo pipefail
+          cd chromium/src/out/Release-iphoneos
+
+          APP_PATH=""
+          for candidate in Chromium.app Chrome.app ios_web_shell.app; do
+            if [[ -d "${candidate}" ]]; then
+              APP_PATH="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "No .app found:"
+            ls -la
+            find . -maxdepth 2 -name '*.app' -print || true
+            exit 1
+          fi
+
+          echo "Packing: ${APP_PATH}"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "${APP_PATH}" Payload/
+
+          IPA_NAME="Chromium-137.ipa"
+          7z a -tzip -mx=9 "${IPA_NAME}" Payload
+          ls -lh "${IPA_NAME}"
+
+          echo "ipa_path=$(pwd)/${IPA_NAME}" >> "$GITHUB_OUTPUT"
+          echo "app_name=${APP_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-ios-137
+          path: chromium/src/out/Release-iphoneos/Chromium-137.ipa
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: Chromium-iOS-v${{ env.RELEASE_TAG }}
+          name: Chromium-iOS-v137-(${{ env.CHROMIUM_REF }})
+          body: |
+            Automated build of Chromium for iOS.
+
+            - **Ref:** `${{ env.CHROMIUM_REF }}`
+            - **Tag:** `${{ env.RELEASE_TAG }}`
+            - **App:** `${{ steps.pack.outputs.app_name }}`
+            - **Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            > Unsigned build (`ios_enable_code_signing = false`). Re-sign before installing on device.
+          files: chromium/src/out/Release-iphoneos/Chromium-137.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
