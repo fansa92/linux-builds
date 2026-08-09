@@ -55,6 +55,7 @@ jobs:
         with:
           tag_name: "Tower-${{ github.event.inputs.tags }}"
           name: "Tower-${{ github.event.inputs.tags }}"
-          files: "./*.ipa"
+          files: |
+            *.ipa
           # draft: false
           # prerelease: false
