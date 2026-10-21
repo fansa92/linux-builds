@@ -1,6 +1,10 @@
 name: Clash Build and Release
 
 # 只保留手动触发
+# 注意: 预置 SDK v1.19.32-clash.3 对应 Client 提交 899c69a7 (其 Dependencies.lock.json
+# 锁定内核 31c2931a)。上游 main 后续已把锁定内核换成尚无预置 Release 的 a5cb38da,
+# 所以默认 ref 固定在 899c69a7; 换 ref 时必须同时换成与该 ref 锁定内核一致的 sdk_tag,
+# workflow 会校验每个 SDK 切片的 sourceRevision, 不一致直接失败。
 on:
   workflow_dispatch:
     inputs:
@@ -9,9 +13,13 @@ on:
         required: false
         default: ''
       ref:
-        description: 'ProjectClash/Clash-Client 的 ref (分支 / commit, 上游无 tag)'
+        description: 'ProjectClash/Clash-Client 的 ref (必须与 sdk_tag 对应)'
         required: false
-        default: 'main'
+        default: '899c69a7651524af6120463c8e86010ae3ee8c10'
+      sdk_tag:
+        description: 'ProjectClash/Clash 预置 SDK 的 Release tag'
+        required: false
+        default: 'v1.19.32-clash.3'
 
 permissions:
   contents: write # 必须有, 才能创建 Release
@@ -83,22 +91,89 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
 
-      - name: Set up Go
+      # Go 不再用于编译内核 (内核改用预置 SDK); configure.py 仍会用 Go 编一个
+      # 很小的 clash-cli 辅助程序, 这是保留 setup-go 的唯一原因。
+      - name: Set up Go (only for the clash-cli helper)
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          go-version: '1.26.9'
           cache: false
 
       - name: Install XcodeGen
         run: brew install xcodegen || brew upgrade xcodegen
 
-      # README 的准备流程: venv + PyYAML, 再 bootstrap (从源码构建五切片 SDK) + configure (生成工程)
-      - name: Bootstrap and configure
+      # 替代 scripts/bootstrap.py: 不再 clone 内核 + gomobile 从源码编 SDK,
+      # 改为下载 ProjectClash/Clash Release 的预置 Clash.xcframework.zip,
+      # 做 SHA256 校验, 并逐切片核对 BuildInfo 的 sourceRevision 与
+      # Dependencies.lock.json 锁定的内核 revision 完全一致。
+      # Adapter 部分仍按 bootstrap.py 的做法, 按 lock 的 revision 拉源码放进 Vendor/。
+      - name: Fetch prebuilt SDK and Adapter sources
+        run: |
+          set -euo pipefail
+          SDK_TAG="${{ github.event.inputs.sdk_tag }}"
+          WORK=".build/prebuilt-sdk"
+          rm -rf "$WORK" Clash.xcframework Vendor/ClashAdapter
+          mkdir -p "$WORK"
+
+          curl -fL --retry 3 --retry-delay 2 \
+            -o "$WORK/Clash.xcframework.zip" \
+            "https://github.com/ProjectClash/Clash/releases/download/${SDK_TAG}/Clash.xcframework.zip"
+          curl -fL --retry 3 --retry-delay 2 \
+            -o "$WORK/SHA256SUMS" \
+            "https://github.com/ProjectClash/Clash/releases/download/${SDK_TAG}/SHA256SUMS"
+          (cd "$WORK" && grep '  Clash.xcframework.zip$' SHA256SUMS | shasum -a 256 -c -)
+
+          mkdir -p "$WORK/extract"
+          ditto -x -k "$WORK/Clash.xcframework.zip" "$WORK/extract"
+          test -d "$WORK/extract/Clash.xcframework"
+          mv "$WORK/extract/Clash.xcframework" Clash.xcframework
+
+          python3 - <<'PY'
+          import json
+          import plistlib
+          from pathlib import Path
+
+          root = Path('.')
+          lock = json.loads((root / 'Dependencies.lock.json').read_text())
+          expected_kernel = lock['kernel']['revision']
+          framework = root / 'Clash.xcframework'
+          info = plistlib.loads((framework / 'Info.plist').read_bytes())
+          libraries = info.get('AvailableLibraries', [])
+          actual = {(x['SupportedPlatform'], x.get('SupportedPlatformVariant', '')) for x in libraries}
+          expected = {('ios', ''), ('ios', 'simulator'), ('tvos', ''), ('tvos', 'simulator'), ('macos', '')}
+          if actual != expected:
+              raise SystemExit(f'Unexpected SDK slices: {actual} != {expected}')
+          for library in libraries:
+              identifier = library['LibraryIdentifier']
+              build_info_path = framework / identifier / 'Clash.framework/Versions/A/Resources/ClashBuildInfo.json'
+              build_info = json.loads(build_info_path.read_text())
+              if build_info.get('sourceRevision') != expected_kernel:
+                  raise SystemExit(
+                      f"SDK slice {identifier} sourceRevision {build_info.get('sourceRevision')} "
+                      f"does not match locked kernel {expected_kernel}; "
+                      'choose an sdk_tag built from the locked kernel revision'
+                  )
+              if build_info.get('sourceDirty') or build_info.get('debugBuild') or build_info.get('internalDiagnostics'):
+                  raise SystemExit(f'SDK slice {identifier} is not a clean release build: {build_info}')
+          print(f'Prebuilt SDK verified against locked kernel {expected_kernel}')
+          PY
+
+          ADAPTER_REPO=$(python3 -c "import json; print(json.load(open('Dependencies.lock.json'))['adapter']['repository'])")
+          ADAPTER_REV=$(python3 -c "import json; print(json.load(open('Dependencies.lock.json'))['adapter']['revision'])")
+          git clone "$ADAPTER_REPO" "$WORK/adapter"
+          git -C "$WORK/adapter" fetch origin "$ADAPTER_REV"
+          git -C "$WORK/adapter" checkout --detach "$ADAPTER_REV"
+          mkdir -p Vendor/ClashAdapter/Sources/ClashAdapter
+          cp "$WORK/adapter"/Sources/ClashAdapter/*.swift Vendor/ClashAdapter/Sources/ClashAdapter/
+          cp "$WORK/adapter/LICENSE" Vendor/ClashAdapter/LICENSE
+          ls -R Vendor/ClashAdapter
+
+      # configure.py 只做 XcodeGen 生成工程 + 编 clash-cli 小工具, 不编内核
+      - name: Configure
         run: |
           python3 -m venv .build/python-env
           source .build/python-env/bin/activate
           python3 -m pip install PyYAML
-          python3 scripts/bootstrap.py
           python3 scripts/configure.py
 
       - name: Build (unsigned archive)
@@ -164,6 +239,7 @@ jobs:
             ProjectClash/Clash-Client 多端不签名编译 (iOS / tvOS / macOS)。
 
             - **Source:** ProjectClash/Clash-Client @ `${{ needs.prepare.outputs.sha }}` (ref: `${{ github.event.inputs.ref }}`)
+            - **Kernel SDK:** ProjectClash/Clash `${{ github.event.inputs.sdk_tag }}` 预置 `Clash.xcframework.zip` (SHA256 已校验, 切片 sourceRevision 与 Client 的 Dependencies.lock.json 锁定内核一致)
             - **Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             > 未签名构建 (`CODE_SIGNING_ALLOWED=NO`)。装到真机前需用自己的证书重签; macOS 版首次打开需绕过 Gatekeeper。
