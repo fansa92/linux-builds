@@ -1,10 +1,14 @@
 name: Clash Build and Release
 
 # 只保留手动触发
-# 注意: 预置 SDK v1.19.32-clash.3 对应 Client 提交 899c69a7 (其 Dependencies.lock.json
-# 锁定内核 31c2931a)。上游 main 后续已把锁定内核换成尚无预置 Release 的 a5cb38da,
-# 所以默认 ref 固定在 899c69a7; 换 ref 时必须同时换成与该 ref 锁定内核一致的 sdk_tag,
+# 默认组合: Client 提交 3b8ea95e (main, 2026-10-21) + 内核 SDK a5cb38da。
+# 该内核 revision 上游没有发 Release, SDK 取自 ProjectClash/Clash CI run
+# 39527425372 的 SDK-Release artifact (2026-11-04 过期), 已验明五切片
+# sourceRevision 均为 a5cb38da 并镜像到本仓库 Release (tag kernel-sdk-a5cb38da)。
+# 换 ref 时必须同时换成与该 ref 锁定内核一致的 sdk_tag (本仓库的镜像 Release),
 # workflow 会校验每个 SDK 切片的 sourceRevision, 不一致直接失败。
+# 注: 更早的 Client 提交 899c69a7 源码本身不一致 (扩展 target 漏列源文件),
+# 不要再往回钉。
 on:
   workflow_dispatch:
     inputs:
@@ -15,11 +19,11 @@ on:
       ref:
         description: 'ProjectClash/Clash-Client 的 ref (必须与 sdk_tag 对应)'
         required: false
-        default: '899c69a7651524af6120463c8e86010ae3ee8c10'
+        default: '3b8ea95eff7cdfd817608fdba8079f4b03013148'
       sdk_tag:
-        description: 'ProjectClash/Clash 预置 SDK 的 Release tag'
+        description: '本仓库镜像的内核 SDK Release tag'
         required: false
-        default: 'v1.19.32-clash.3'
+        default: 'kernel-sdk-a5cb38da'
 
 permissions:
   contents: write # 必须有, 才能创建 Release
@@ -100,7 +104,7 @@ jobs:
         run: brew install xcodegen || brew upgrade xcodegen
 
       # 替代 scripts/bootstrap.py: 不再 clone 内核 + gomobile 从源码编 SDK,
-      # 改为下载 ProjectClash/Clash Release 的预置 Clash.xcframework.zip,
+      # 改为下载本仓库镜像 Release 里的预置 Clash.xcframework.zip (来源见文件头),
       # 做 SHA256 校验, 并逐切片核对 BuildInfo 的 sourceRevision 与
       # Dependencies.lock.json 锁定的内核 revision 完全一致。
       # Adapter 部分仍按 bootstrap.py 的做法, 按 lock 的 revision 拉源码放进 Vendor/。
@@ -114,10 +118,10 @@ jobs:
 
           curl -fL --retry 3 --retry-delay 2 \
             -o "$WORK/Clash.xcframework.zip" \
-            "https://github.com/ProjectClash/Clash/releases/download/${SDK_TAG}/Clash.xcframework.zip"
+            "https://github.com/${{ github.repository }}/releases/download/${SDK_TAG}/Clash.xcframework.zip"
           curl -fL --retry 3 --retry-delay 2 \
             -o "$WORK/SHA256SUMS" \
-            "https://github.com/ProjectClash/Clash/releases/download/${SDK_TAG}/SHA256SUMS"
+            "https://github.com/${{ github.repository }}/releases/download/${SDK_TAG}/SHA256SUMS"
           (cd "$WORK" && grep '  Clash.xcframework.zip$' SHA256SUMS | shasum -a 256 -c -)
 
           mkdir -p "$WORK/extract"
@@ -172,37 +176,6 @@ jobs:
           source .build/python-env/bin/activate
           python3 -m pip install PyYAML
           python3 scripts/configure.py
-
-      # CI 补丁 (不动上游文件, 只新增一个文件): JSCEngine.swift 在苹果平台只
-      # import JavaScriptCore, 而 JSContextGroupSetExecutionTimeLimit /
-      # JSContextGroupClearExecutionTimeLimit 只声明在 JSContextRefPrivate.h,
-      # Xcode 27.0 的公开 SDK 模块里看不到, 编译报 cannot find in scope
-      # (函数本身在 JavaScriptCore 二进制里有导出, 上游的 CJavaScriptCore
-      # shim.h 也是这么声明的, 只是该模块在苹果平台没被 import)。
-      # 用 @_silgen_name 按同一签名补上声明即可。
-      - name: Patch - declare JSC execution-limit functions
-        run: |
-          cat > apple/AdBlockScriptKit/Sources/AdBlockScriptKit/JSContextGroupExecutionLimitShim.swift <<'EOF'
-          import Foundation
-
-          #if !os(Linux)
-          import JavaScriptCore
-
-          typealias JSContextGroupExecutionTimeLimitCallback =
-              @convention(c) (JSContextRef?, UnsafeMutableRawPointer?) -> Bool
-
-          @_silgen_name("JSContextGroupSetExecutionTimeLimit")
-          func JSContextGroupSetExecutionTimeLimit(
-              _ group: JSContextGroupRef,
-              _ limit: Double,
-              _ callback: JSContextGroupExecutionTimeLimitCallback?,
-              _ context: UnsafeMutableRawPointer?
-          )
-
-          @_silgen_name("JSContextGroupClearExecutionTimeLimit")
-          func JSContextGroupClearExecutionTimeLimit(_ group: JSContextGroupRef)
-          #endif
-          EOF
 
       - name: Build (unsigned archive)
         run: |
@@ -267,7 +240,7 @@ jobs:
             ProjectClash/Clash-Client 多端不签名编译 (iOS / tvOS / macOS)。
 
             - **Source:** ProjectClash/Clash-Client @ `${{ needs.prepare.outputs.sha }}` (ref: `${{ github.event.inputs.ref }}`)
-            - **Kernel SDK:** ProjectClash/Clash `${{ github.event.inputs.sdk_tag }}` 预置 `Clash.xcframework.zip` (SHA256 已校验, 切片 sourceRevision 与 Client 的 Dependencies.lock.json 锁定内核一致)
+            - **Kernel SDK:** 本仓库镜像 Release `${{ github.event.inputs.sdk_tag }}` 的预置 `Clash.xcframework.zip` (源自 ProjectClash/Clash CI, SHA256 已校验, 切片 sourceRevision 与 Client 的 Dependencies.lock.json 锁定内核一致)
             - **Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             > 未签名构建 (`CODE_SIGNING_ALLOWED=NO`)。装到真机前需用自己的证书重签; macOS 版首次打开需绕过 Gatekeeper。
