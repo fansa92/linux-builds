@@ -55,7 +55,11 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: prepare
-    runs-on: macos-latest
+    # 上游要求 Xcode 27+ (JSContextGroupSetExecutionTimeLimit 等 JavaScriptCore
+    # C API 只在 27 的 SDK 里对 Swift 可见, Xcode 26.6 编 JSCEngine.swift 会报
+    # cannot find in scope)。GitHub 的 xcode-27 镜像 (macOS 27 + Xcode 27,
+    # arm64) 2026-10-15 已 GA, 专用它, 不要用 macos-latest (最高只有 26.6)。
+    runs-on: xcode-27
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -78,16 +82,9 @@ jobs:
           repository: ProjectClash/Clash-Client
           ref: ${{ github.event.inputs.ref }}
 
-      # 上游要求 Xcode 27+; runner 上装了多个 Xcode 时选版本号最高的一个
-      - name: Select newest Xcode
+      # xcode-27 镜像只带 Xcode 27, 无需再挑版本, 打印出来备查
+      - name: Show Xcode version
         run: |
-          ls -d /Applications/Xcode*.app 2>/dev/null || true
-          NEWEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$NEWEST" ]; then
-            sudo xcode-select -s "$NEWEST/Contents/Developer"
-          else
-            sudo xcode-select -s "/Applications/Xcode.app/Contents/Developer"
-          fi
           xcodebuild -version
           xcodebuild -showsdks
 
