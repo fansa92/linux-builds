@@ -1,0 +1,174 @@
+name: Clash Build and Release
+
+# 只保留手动触发
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 1.0.9, 留空则读取上游 project.yml 的 MARKETING_VERSION)'
+        required: false
+        default: ''
+      ref:
+        description: 'ProjectClash/Clash-Client 的 ref (分支 / commit, 上游无 tag)'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write # 必须有, 才能创建 Release
+
+env:
+  GOTOOLCHAIN: auto
+
+jobs:
+  prepare:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      sha: ${{ steps.ver.outputs.sha }}
+    steps:
+      - name: Checkout ProjectClash/Clash-Client
+        uses: actions/checkout@v4
+        with:
+          repository: ProjectClash/Clash-Client
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Determine version
+        id: ver
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -E '^[[:space:]]*MARKETING_VERSION:' apple/ClashClient/project.yml | head -1 | awk '{print $2}' | tr -d "'\"")
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION ($(git rev-parse --short HEAD))"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            scheme: ClashiOS
+            destination: 'generic/platform=iOS'
+          - platform: tvOS
+            scheme: ClashtvOS
+            destination: 'generic/platform=tvOS'
+          - platform: macOS
+            scheme: ClashmacOS
+            destination: 'platform=macOS'
+
+    steps:
+      - name: Checkout ProjectClash/Clash-Client
+        uses: actions/checkout@v4
+        with:
+          repository: ProjectClash/Clash-Client
+          ref: ${{ github.event.inputs.ref }}
+
+      # 上游要求 Xcode 27+; runner 上装了多个 Xcode 时选版本号最高的一个
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          NEWEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEWEST" ]; then
+            sudo xcode-select -s "$NEWEST/Contents/Developer"
+          else
+            sudo xcode-select -s "/Applications/Xcode.app/Contents/Developer"
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Install XcodeGen
+        run: brew install xcodegen || brew upgrade xcodegen
+
+      # README 的准备流程: venv + PyYAML, 再 bootstrap (从源码构建五切片 SDK) + configure (生成工程)
+      - name: Bootstrap and configure
+        run: |
+          python3 -m venv .build/python-env
+          source .build/python-env/bin/activate
+          python3 -m pip install PyYAML
+          python3 scripts/bootstrap.py
+          python3 scripts/configure.py
+
+      - name: Build (unsigned archive)
+        run: |
+          xcodebuild \
+            -project apple/ClashClient/ClashClient.xcodeproj \
+            -scheme "${{ matrix.scheme }}" \
+            -configuration Release \
+            -destination "${{ matrix.destination }}" \
+            -archivePath "build/${{ matrix.scheme }}.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            archive
+
+      - name: Package
+        id: pack
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          APP=$(ls -d build/*.xcarchive/Products/Applications/*.app | head -1)
+          echo "Packing: $APP"
+          if [ "${{ matrix.platform }}" = "macOS" ]; then
+            OUT="Clash-macOS-${VERSION}.zip"
+            ditto -c -k --keepParent "$APP" "$OUT"
+          else
+            OUT="Clash-${{ matrix.platform }}-${VERSION}.ipa"
+            rm -rf Payload && mkdir Payload
+            cp -R "$APP" Payload/
+            zip -qry "$OUT" Payload
+          fi
+          ls -lh "$OUT"
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clash-${{ matrix.platform }}
+          path: ${{ steps.pack.outputs.file }}
+
+  release:
+    name: Create GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Clash-*
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: clash-${{ needs.prepare.outputs.version }}
+          name: clash-${{ needs.prepare.outputs.version }}
+          body: |
+            ## clash-${{ needs.prepare.outputs.version }}
+
+            ProjectClash/Clash-Client 多端不签名编译 (iOS / tvOS / macOS)。
+
+            - **Source:** ProjectClash/Clash-Client @ `${{ needs.prepare.outputs.sha }}` (ref: `${{ github.event.inputs.ref }}`)
+            - **Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            > 未签名构建 (`CODE_SIGNING_ALLOWED=NO`)。装到真机前需用自己的证书重签; macOS 版首次打开需绕过 Gatekeeper。
+          draft: false
+          prerelease: false
+          files: |
+            Clash-*.ipa
+            Clash-*.zip
