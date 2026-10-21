@@ -173,6 +173,37 @@ jobs:
           python3 -m pip install PyYAML
           python3 scripts/configure.py
 
+      # CI 补丁 (不动上游文件, 只新增一个文件): JSCEngine.swift 在苹果平台只
+      # import JavaScriptCore, 而 JSContextGroupSetExecutionTimeLimit /
+      # JSContextGroupClearExecutionTimeLimit 只声明在 JSContextRefPrivate.h,
+      # Xcode 27.0 的公开 SDK 模块里看不到, 编译报 cannot find in scope
+      # (函数本身在 JavaScriptCore 二进制里有导出, 上游的 CJavaScriptCore
+      # shim.h 也是这么声明的, 只是该模块在苹果平台没被 import)。
+      # 用 @_silgen_name 按同一签名补上声明即可。
+      - name: Patch - declare JSC execution-limit functions
+        run: |
+          cat > apple/AdBlockScriptKit/Sources/AdBlockScriptKit/JSContextGroupExecutionLimitShim.swift <<'EOF'
+          import Foundation
+
+          #if !os(Linux)
+          import JavaScriptCore
+
+          typealias JSContextGroupExecutionTimeLimitCallback =
+              @convention(c) (JSContextRef?, UnsafeMutableRawPointer?) -> Bool
+
+          @_silgen_name("JSContextGroupSetExecutionTimeLimit")
+          func JSContextGroupSetExecutionTimeLimit(
+              _ group: JSContextGroupRef,
+              _ limit: Double,
+              _ callback: JSContextGroupExecutionTimeLimitCallback?,
+              _ context: UnsafeMutableRawPointer?
+          )
+
+          @_silgen_name("JSContextGroupClearExecutionTimeLimit")
+          func JSContextGroupClearExecutionTimeLimit(_ group: JSContextGroupRef)
+          #endif
+          EOF
+
       - name: Build (unsigned archive)
         run: |
           xcodebuild \
